@@ -98,9 +98,16 @@ class Reloader(object):
         if filenames:
             self._reload(filenames)
 
-    def _reload(self, filenames):
+    def _matching_modules(self, filenames):
         modules = [m for m in sys.modules.values()
-                if getattr(m, '__file__', None) in filenames]
+                if m and '__file__' in m.__dict__]
+        for m in modules:
+            filename = m.__file__
+            if filename.endswith('.pyc') or filename.endswith('.pyo'):
+                filename = filename[:-1]
+            if filename in filenames:
+                yield m
 
-        for mod in modules:
+    def _reload(self, filenames):
+        for mod in self._matching_modules(filenames):
             reloader.reload(mod)
