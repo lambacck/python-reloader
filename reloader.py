@@ -32,12 +32,12 @@ import imp
 import sys
 
 __author__ = 'Jon Parise <jon@indelible.org>'
-__version__ = '0.2'
+__version__ = '0.3'
 
 __all__ = ('enable', 'disable', 'get_dependencies', 'reload')
 
 _baseimport = builtins.__import__
-_dependencies = dict()
+_parents = dict()
 _parent = None
 
 def enable():
@@ -47,12 +47,12 @@ def enable():
 def disable():
     """Disable global module dependency tracking."""
     builtins.__import__ = _baseimport
-    _dependencies.clear()
+    _parents.clear()
     _parent = None
 
-def get_dependencies(m):
+def get_parents(m):
     """Get the dependency list for the given imported module."""
-    return _dependencies.get(m.__name__, None)
+    return _parents.get(m.__name__, None)
 
 def _deepcopy_module_dict(m):
     """Make a deep copy of a module's dictionary."""
@@ -68,28 +68,16 @@ def _deepcopy_module_dict(m):
 
 def _reload(m, visited):
     """Internal module reloading routine."""
-    name = m.__name__
+    name = getattr(m, '__name__', None)
 
     # Start by adding this module to our set of visited modules.  We use this
     # set to avoid running into infinite recursion while walking the module
     # dependency graph.
     visited.add(m)
 
-    # Start by reloading all of our dependencies in reverse order.  Note that
-    # we recursively call ourself to perform the nested reloads.
-    deps = _dependencies.get(name, None)
-    if deps is not None:
-        for dep in reversed(deps):
-            if dep not in visited:
-                _reload(dep, visited)
+    if name is None:
+        return
 
-    # Clear this module's list of dependencies.  Some import statements may
-    # have been removed.  We'll rebuild the dependency list as part of the
-    # reload operation below.
-    try:
-        del _dependencies[name]
-    except KeyError:
-        pass
 
     # Because we're triggering a reload and not an import, the module itself
     # won't run through our _import hook below.  In order for this module's
@@ -111,6 +99,15 @@ def _reload(m, visited):
     # Reset our parent pointer now that the reloading operation is complete.
     _parent = None
 
+    # follow our parents so they can grab the changes we made to ourself
+    parents = _parents.get(name)
+    if parents is not None:
+        for parent in parents:
+            if parent not in visited:
+                _reload(parent, visited)
+
+
+
 def reload(m):
     """Reload an existing module.
 
@@ -128,19 +125,28 @@ def _import(name, globals=None, locals=None, fromlist=None, level=-1):
     parent = _parent
     _parent = name
 
+    if globals is None:
+        globals = sys._getframe(1).f_globals
+    if locals is None:
+        locals = {}
+    if fromlist is None:
+        fromlist = []
+
     # Perform the actual import using the base import function.  We get the
     # module directly from sys.modules because the import function only
     # returns the top-level module reference for a nested import statement
     # (e.g. `import package.module`).
-    _baseimport(name, globals, locals, fromlist, level)
-    m = sys.modules.get(name, None)
+    m = _baseimport(name, globals, locals, fromlist, level)
+    sysentry = sys.modules.get(name, None)
 
     # If we have a parent (i.e. this is a nested import) and this is a
     # reloadable (source-based) module, we append ourself to our parent's
     # dependency list.
-    if parent is not None and hasattr(m, '__file__'):
-        l = _dependencies.setdefault(parent, [])
-        l.append(m)
+    if parent is not None and hasattr(sysentry, '__file__'):
+        parent_entry = sys.modules.get(parent)
+        if parent_entry:
+            l = _parents.setdefault(name,set())
+            l.add(parent_entry)
 
     # Lastly, we always restore our global _parent pointer.
     _parent = parent
